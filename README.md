@@ -19,4 +19,4 @@ cd <path to your package>/install/coordinate_pkg/lib/coordinate_pkg python3 coor
 ```
 ros2 topic echo /object/pose_inertial
 ```
-*Messsages are published on the topic whenever it detectcs a backpack/handbag in the camera*
+*Messsages are published on the topic whenever the drone detectcs a backpack/handbag in the camera*
