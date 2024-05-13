@@ -42,6 +42,7 @@
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
 #include <math.h>
@@ -58,7 +59,11 @@
 #define PATH_DIST	0.5		// distance between passes along length (m)
 #define CYCLE_S		10000		// time to complete a search
 #define STEPS		(CYCLE_S*RATE)	// iterations
-#define ALT_VEL		0.25		// altitude velocity (m/s)	
+#define ALT_VEL		0.25		// altitude velocity (m/s)
+#define X0		0.5		// initial x-coordinate (m)
+#define Y0		0		// initial y-coordinate (m)
+// #define TAG_ID		'0'		// april tag ID to initiate search area	
+// hard-coded	
 	
 #define PI  3.14159265358979323846264338327950
 
@@ -66,16 +71,15 @@ using namespace std::chrono;
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
 
-
 class OffboardControl : public rclcpp::Node
 {
 public:
 	OffboardControl() : Node("offboard_control")
-	{
-
+	{		
 		offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
 		trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
 		vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
+		
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
         auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
@@ -84,6 +88,12 @@ public:
             //if(c_mode.flag_control_offboard_enabled==1){
             //    printf("offboard away!!!");
             // }
+        });
+        tag_id_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagidmsg){
+	    tagid = *tagidmsg;
+        });
+        tag_inert_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagposmsg){
+            tagpos = *tagposmsg;
         });
 
 		offboard_setpoint_counter_ = 0;
@@ -120,16 +130,20 @@ private:
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
-    rclcpp::Subscription<VehicleControlMode>::SharedPtr vehicle_command_listener_;
+    	rclcpp::Subscription<VehicleControlMode>::SharedPtr vehicle_command_listener_;
+    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_id_listener_;
+    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_inert_listener_;
 
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
     
 
 	uint64_t offboard_setpoint_counter_;   //!< counter for the number of setpoints sent
         
-    TrajectorySetpoint path[STEPS];
-    VehicleControlMode c_mode;
-        
+    	TrajectorySetpoint path[STEPS];
+    	VehicleControlMode c_mode;
+    	geometry_msgs::msg::PoseStamped tagid;
+    	geometry_msgs::msg::PoseStamped tagpos;
+    	        
 	void publish_offboard_control_mode();
 	void publish_trajectory_setpoint();
 	//void publish_vehicle_command(uint16_t command, float param1 = 0.0, float param2 = 0.0);
@@ -187,13 +201,16 @@ void OffboardControl::InitPath()
     const double angrate = ANG_RATE;
     const double path_dist = PATH_DIST;
     const double altvel = ALT_VEL;
+    const double x0 = X0;
+    const double y0 = Y0;
+    std::string tag_des = "0";
     
     const double dt = 1.0/loop_rate;
     const double dadt_cw = (2.0*PI)/angrate;
     const double dadt_ccw = -(2.0*PI)/angrate;
     const double rad = path_dist/2.0;
     
-    double pos[2] = {0, 0}; // holds the position within the search area
+    double pos[2] = {x0, y0}; // holds the position within the search area
     double t = 0;
     
     // assumes length is larger than width
@@ -212,10 +229,11 @@ void OffboardControl::InitPath()
     	// turn left
     	// stop at end of +length
 	
-    int flag = 0;
+    int flag = -1;
+    double tag[2] = {0, 0};
 	
     for(i=0;i<STEPS;i++) {
-	if (i<=100) {
+	if (flag == -1 || i<=250) {
 		path[i].position[0] = pos[0];
 		path[i].position[1] = pos[1];
 		path[i].position[2] = FLIGHT_ALTITUDE;
@@ -232,6 +250,13 @@ void OffboardControl::InitPath()
 		
 		pos[0] = path[i].position[0];
 		pos[1] = path[i].position[1];
+		
+		if (tagid.header.frame_id == tag_des) {
+			flag = 0;
+			tag[0] = tagpos.pose.position.x;
+			tag[1] = tagpos.pose.position.y;
+			printf("\nTag x: %7.3f    y: %7.3f\n",tag[0],tag[1]);
+		}
 	}
 	else {
 		if (flag==0) {
@@ -257,7 +282,7 @@ void OffboardControl::InitPath()
 			pos[0] = path[i].position[0];
 			pos[1] = path[i].position[1];
 			
-			if (pos[0]>=width) {
+			if (pos[0]>=(width+x0)) {
 				flag = 1; // turn right
 			}
 		}
@@ -292,7 +317,7 @@ void OffboardControl::InitPath()
 			if (abs(180.0-abs(path[i].yaw)*180.0/PI) <= 0.05) {
 				flag = 2; // go negative width
 			}
-			else if (path[i].position[1]>=length) {
+			else if (path[i].position[1]>=(length+y0)) {
 				flag = 4;
 			}			
 		}
@@ -319,7 +344,7 @@ void OffboardControl::InitPath()
 			pos[0] = path[i].position[0];
 			pos[1] = path[i].position[1];
 			
-			if (pos[0]<=0) {
+			if (pos[0]<=x0) {
 				flag = 3; // turn left
 			}
 		}
@@ -354,7 +379,7 @@ void OffboardControl::InitPath()
 			if ((abs(0-abs(path[i].yaw)*180.0/PI) <= 0.05) ) {
 				flag = 0; // go positive width
 			}
-			else if (path[i].position[1]>=length) {
+			else if (path[i].position[1]>=(length+y0)) {
 				flag = 4;
 			}
 		}
