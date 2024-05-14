@@ -13,10 +13,10 @@ source install/setup.bash
 ```
 voxl-tflite-server
 ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2_node
-cd <path to your package>/install/coordinate_pkg/lib/coordinate_pkg python3 coordinate_node
+ros2 run localization_package localization node
 ```
-4. *Subscribe to the /object/pose_inertial to get the coordinates of the detected object in the camera frame*
+4. *Subscribe to the /object/pose_camera to get the coordinates of the detected object in the camera frame*
 ```
-ros2 topic echo /object/pose_inertial
+ros2 topic echo /object/pose_camera
 ```
 *Messsages are published on the topic whenever the drone detectcs a backpack/handbag in the camera*
