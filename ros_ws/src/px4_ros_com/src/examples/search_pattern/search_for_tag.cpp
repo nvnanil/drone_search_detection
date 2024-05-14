@@ -49,8 +49,8 @@
 #include <chrono>
 #include <iostream>
 
-#define FLIGHT_ALTITUDE -1.0f		// flight altitude (m)
-#define	HOVER_ALT	-0.5f		// hover altitude (m)
+#define FLIGHT_ALTITUDE -0.5f		// flight altitude (m)
+#define	HOVER_ALT	-1.5f		// hover altitude (m)
 #define RATE            20 		// loop rate (hz)
 #define SEARCH_WIDTH	1		// search area width (m)
 #define SEARCH_LENGTH	3		// search area length (m)
@@ -60,9 +60,10 @@
 #define CYCLE_S		10000		// time to complete a search
 #define STEPS		(CYCLE_S*RATE)	// iterations
 #define ALT_VEL		0.25		// altitude velocity (m/s)
-#define X0		0.5		// initial x-coordinate (m)
+#define X0		0.254		// initial x-coordinate (m)
 #define Y0		0		// initial y-coordinate (m)
-// #define TAG_ID		'0'		// april tag ID to initiate search area	
+#define TAG_ID		'0'		// april tag ID to initiate search area	
+#define CLASS		'backpack'	// object class to search for
 // hard-coded	
 	
 #define PI  3.14159265358979323846264338327950
@@ -89,12 +90,15 @@ public:
             //    printf("offboard away!!!");
             // }
         });
-        tag_id_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagidmsg){
-	    tagid = *tagidmsg;
+        obj_inert_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/object/pose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr objmsg){
+            obj_data = *objmsg;
+            //if(c_mode.flag_control_offboard_enabled==1){
+            //    printf("offboard away!!!");
+            // }
         });
-        tag_inert_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagposmsg){
-            tagpos = *tagposmsg;
-        });
+        tag_inert_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagmsg){
+            tag_data = *tagmsg;
+       });
 
 		offboard_setpoint_counter_ = 0;
 
@@ -131,7 +135,7 @@ private:
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
     	rclcpp::Subscription<VehicleControlMode>::SharedPtr vehicle_command_listener_;
-    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_id_listener_;
+    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr obj_inert_listener_;
     	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_inert_listener_;
 
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
@@ -140,9 +144,10 @@ private:
 	uint64_t offboard_setpoint_counter_;   //!< counter for the number of setpoints sent
         
     	TrajectorySetpoint path[STEPS];
+    	TrajectorySetpoint obj_loc;
     	VehicleControlMode c_mode;
-    	geometry_msgs::msg::PoseStamped tagid;
-    	geometry_msgs::msg::PoseStamped tagpos;
+    	geometry_msgs::msg::PoseStamped obj_data;
+    	geometry_msgs::msg::PoseStamped tag_data;s
     	        
 	void publish_offboard_control_mode();
 	void publish_trajectory_setpoint();
@@ -175,6 +180,9 @@ void OffboardControl::publish_offboard_control_mode()
 void OffboardControl::publish_trajectory_setpoint()
 {
 
+	const std::string tag_des = TAG_ID;
+	const std::string obj_des = CLASS;
+	
         // Increment the setpoint counter
         offboard_setpoint_counter_++;
         if(offboard_setpoint_counter_>=STEPS){
@@ -182,9 +190,27 @@ void OffboardControl::publish_trajectory_setpoint()
 	}
 	path[offboard_setpoint_counter_].timestamp = this->get_clock()->now().nanoseconds() / 1000;
 	if(c_mode.flag_control_offboard_enabled==1){
-		trajectory_setpoint_publisher_->publish(path[offboard_setpoint_counter_]);
-
-		printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
+		if(offboard_setpoint_counter_<=250) {
+			trajectory_setpoint_publisher_->publish(path[offboard_setpoint_counter_]);
+			printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
+			printf("Tag ID: %s", tag_data.header.frame_id);
+			if(tag_data.header.frame_id!=tag_des) {
+				offboard_setpoint_counter_ = 0;
+			}
+		}
+		else {
+			if(obj_data.header.frame_id!=obj_des) {
+				trajectory_setpoint_publisher_->publish(path[offboard_setpoint_counter_]);
+				printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
+				printf("Object: %s     x: %7.3f     y: %7.3f\n", obj_data.header.frame_id, obj_data.pose.position.x, obj_data.pose.position.y);
+			}
+			else {
+				obj_loc.position[0] = obj_data.pose.position.x;
+				obj_loc.position[1] = obj_data.pose.position.y;
+				obj_loc.position[2] = FLIGHT_ALTITUDE;
+				trajectory_setpoint_publisher_->publish(obj_loc);
+			}
+		}
 	}
 	else{
 		offboard_setpoint_counter_ = 0;
@@ -203,7 +229,6 @@ void OffboardControl::InitPath()
     const double altvel = ALT_VEL;
     const double x0 = X0;
     const double y0 = Y0;
-    std::string tag_des = "0";
     
     const double dt = 1.0/loop_rate;
     const double dadt_cw = (2.0*PI)/angrate;
@@ -230,7 +255,6 @@ void OffboardControl::InitPath()
     	// stop at end of +length
 	
     int flag = -1;
-    double tag[2] = {0, 0};
 	
     for(i=0;i<STEPS;i++) {
 	if (flag == -1 || i<=250) {
@@ -251,12 +275,7 @@ void OffboardControl::InitPath()
 		pos[0] = path[i].position[0];
 		pos[1] = path[i].position[1];
 		
-		if (tagid.header.frame_id == tag_des) {
-			flag = 0;
-			tag[0] = tagpos.pose.position.x;
-			tag[1] = tagpos.pose.position.y;
-			printf("\nTag x: %7.3f    y: %7.3f\n",tag[0],tag[1]);
-		}
+		flag = 0;
 	}
 	else {
 		if (flag==0) {
