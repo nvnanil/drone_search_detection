@@ -48,22 +48,23 @@
 #include <math.h>
 #include <chrono>
 #include <iostream>
+#include <string.h>
 
 #define FLIGHT_ALTITUDE -0.5f		// flight altitude (m)
 #define	HOVER_ALT	-1.5f		// hover altitude (m)
 #define RATE            20 		// loop rate (hz)
-#define SEARCH_WIDTH	1		// search area width (m)
-#define SEARCH_LENGTH	3		// search area length (m)
+#define SEARCH_WIDTH	1.5		// search area width (m)
+#define SEARCH_LENGTH	2		// search area length (m)
 #define LIN_VEL 	0.1		// linear velocity (m/s)
 #define ANG_RATE	5		// time to complete a full circle (s)
 #define PATH_DIST	0.5		// distance between passes along length (m)
 #define CYCLE_S		10000		// time to complete a search
 #define STEPS		(CYCLE_S*RATE)	// iterations
 #define ALT_VEL		0.25		// altitude velocity (m/s)
-#define X0		0.254		// initial x-coordinate (m)
+#define X0		0		// initial x-coordinate (m)
 #define Y0		0		// initial y-coordinate (m)
-#define TAG_ID		'0'		// april tag ID to initiate search area	
-#define CLASS		'backpack'	// object class to search for
+//#define TAG_ID		'0'		// april tag ID to initiate search area	
+//#define CLASS		'backpack'	// object class to search for
 // hard-coded	
 	
 #define PI  3.14159265358979323846264338327950
@@ -86,21 +87,21 @@ public:
 
         vehicle_command_listener_ = this->create_subscription<VehicleControlMode>("/fmu/out/vehicle_control_mode", qos, [this](const px4_msgs::msg::VehicleControlMode::UniquePtr msg){
             c_mode = *msg;
-            //if(c_mode.flag_control_offboard_enabled==1){
-            //    printf("offboard away!!!");
-            // }
         });
-        obj_inert_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/object/pose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr objmsg){
+        obj_class_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/object/pose_camera", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr objmsg){
             obj_data = *objmsg;
-            //if(c_mode.flag_control_offboard_enabled==1){
-            //    printf("offboard away!!!");
-            // }
         });
-        tag_inert_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagmsg){
+        tag_id_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagmsg){
             tag_data = *tagmsg;
+       });
+       tag_pose_listener_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/tag_detections/tagpose_inertial", qos, [this](const geometry_msgs::msg::PoseStamped::UniquePtr tagposmsg){
+       	    tag_pos_data = *tagposmsg;
        });
 
 		offboard_setpoint_counter_ = 0;
+		pub_flag_ = 0;
+		// 0 = nominal trajectory execution
+		// 1 = return to start
 
 
 
@@ -135,19 +136,26 @@ private:
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
     	rclcpp::Subscription<VehicleControlMode>::SharedPtr vehicle_command_listener_;
-    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr obj_inert_listener_;
-    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_inert_listener_;
+    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr obj_class_listener_;
+    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_id_listener_;
+    	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr tag_pose_listener_;
 
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
     
 
 	uint64_t offboard_setpoint_counter_;   //!< counter for the number of setpoints sent
+	uint64_t pub_flag_; // flag for publisher
         
     	TrajectorySetpoint path[STEPS];
     	TrajectorySetpoint obj_loc;
+    	TrajectorySetpoint tag_loc;
     	VehicleControlMode c_mode;
     	geometry_msgs::msg::PoseStamped obj_data;
-    	geometry_msgs::msg::PoseStamped tag_data;s
+    	geometry_msgs::msg::PoseStamped tag_data;
+    	geometry_msgs::msg::PoseStamped tag_pos_data;
+    	
+	double tag_pos_inert[2] = {X0,Y0};
+	double obj_pos_inert[2] = {0,0};
     	        
 	void publish_offboard_control_mode();
 	void publish_trajectory_setpoint();
@@ -180,36 +188,63 @@ void OffboardControl::publish_offboard_control_mode()
 void OffboardControl::publish_trajectory_setpoint()
 {
 
-	const std::string tag_des = TAG_ID;
-	const std::string obj_des = CLASS;
+	const std::string tag_des = "0";
+	const std::string obj_des = "backpack";
+	const std::string obj_des2 = "rand2";
+	const std::string obj_des3 = "rand3";
+	std::string tag_ID; // AprilTag ID detected
+	std::string class_det; // object class detected
+	
 	
         // Increment the setpoint counter
         offboard_setpoint_counter_++;
-        if(offboard_setpoint_counter_>=STEPS){
-		offboard_setpoint_counter_ = 0;
-	}
+        //if(offboard_setpoint_counter_>=STEPS){
+	//	offboard_setpoint_counter_ = 0;
+	//}
 	path[offboard_setpoint_counter_].timestamp = this->get_clock()->now().nanoseconds() / 1000;
-	if(c_mode.flag_control_offboard_enabled==1){
+	if(c_mode.flag_control_offboard_enabled==1 && offboard_setpoint_counter_<=STEPS){
 		if(offboard_setpoint_counter_<=250) {
 			trajectory_setpoint_publisher_->publish(path[offboard_setpoint_counter_]);
-			printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
-			printf("Tag ID: %s", tag_data.header.frame_id);
-			if(tag_data.header.frame_id!=tag_des) {
-				offboard_setpoint_counter_ = 0;
-			}
+			//printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
+			tag_ID = tag_data.header.frame_id;
+			printf("Tag ID: %s    x: %7.3f    y: %7.3f\n", tag_ID.c_str(), tag_pos_data.pose.position.x, tag_pos_data.pose.position.y);
+			tag_pos_inert[0] = tag_pos_data.pose.position.x;
+			tag_pos_inert[1] = tag_pos_data.pose.position.y;
+			//if(strcmp(tag_ID.c_str(),tag_des.c_str())!=0 && offboard_setpoint_counter_==250) {
+			//	offboard_setpoint_counter_ = 0;
+			//}
+			if (strcmp(tag_ID.c_str(),tag_des.c_str())==0) {
+				printf("TAG %s FOUND!\n",tag_ID.c_str());
+			}	
+				
 		}
-		else {
-			if(obj_data.header.frame_id!=obj_des) {
+		else if (offboard_setpoint_counter_>250) {
+			class_det = obj_data.header.frame_id;
+			if(strcmp(class_det.c_str(),obj_des.c_str())!=0 && strcmp(class_det.c_str(),obj_des2.c_str())!=0 && strcmp(class_det.c_str(),obj_des3.c_str())!=0) {
 				trajectory_setpoint_publisher_->publish(path[offboard_setpoint_counter_]);
-				printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
-				printf("Object: %s     x: %7.3f     y: %7.3f\n", obj_data.header.frame_id, obj_data.pose.position.x, obj_data.pose.position.y);
 			}
-			else {
-				obj_loc.position[0] = obj_data.pose.position.x;
-				obj_loc.position[1] = obj_data.pose.position.y;
-				obj_loc.position[2] = FLIGHT_ALTITUDE;
-				trajectory_setpoint_publisher_->publish(obj_loc);
+			if(strcmp(class_det.c_str(),obj_des.c_str())==0 || strcmp(class_det.c_str(),obj_des2.c_str())==0 || strcmp(class_det.c_str(),obj_des3.c_str())==0) {
+				pub_flag_ = 1;
 			}
+				//printf("i:%ld x:%7.3f y:%7.3f vx:%7.3f vy:%7.3f yaw:%7.1f\n",offboard_setpoint_counter_, path[offboard_setpoint_counter_].position[0], path[offboard_setpoint_counter_].position[1], path[offboard_setpoint_counter_].velocity[0], path[offboard_setpoint_counter_].velocity[1], path[offboard_setpoint_counter_].yaw*180.0f/PI);
+				//printf("Object: %s     x: %7.3f     y: %7.3f\n", class_det.c_str(), obj_data.pose.position.x, obj_data.pose.position.y);
+			printf("OBJECT OF TYPE %s FOUND!\n", class_det.c_str());
+			
+			//else {
+			//	obj_loc.position[0] = obj_data.pose.position.x;
+			//	obj_loc.position[1] = obj_data.pose.position.y;
+			//	obj_loc.position[2] = HOVER_ALT;
+			//	trajectory_setpoint_publisher_->publish(obj_loc);
+			//	offboard_setpoint_counter_ = STEPS;
+			//	printf("FOUND! Object: %s     x: %7.3f     y: %7.3f\n", class_det.c_str(), obj_data.pose.position.x, obj_data.pose.position.y);
+			//}
+		}
+		if(path[offboard_setpoint_counter_].position[1]>=SEARCH_LENGTH || pub_flag_==1) {
+			tag_loc.position[0] = tag_pos_inert[0];
+			tag_loc.position[1] = tag_pos_inert[1];
+			tag_loc.position[2] = HOVER_ALT;
+			offboard_setpoint_counter_ = STEPS;
+			printf("RETURN TO START! x: %7.3f    y: %7.3f\n", tag_loc.position[0], tag_loc.position[1]);
 		}
 	}
 	else{
@@ -258,16 +293,11 @@ void OffboardControl::InitPath()
 	
     for(i=0;i<STEPS;i++) {
 	if (flag == -1 || i<=250) {
-		path[i].position[0] = pos[0];
-		path[i].position[1] = pos[1];
+		path[i].position[0] = i*pos[0]/250;
+		path[i].position[1] = i*pos[1]/250;
 		path[i].position[2] = FLIGHT_ALTITUDE;
 		
-		path[i].velocity[0] = 0;
-		path[i].velocity[1] = 0;
 		path[i].velocity[2] = 0;
-		
-		path[i].acceleration[0] = 0;
-		path[i].acceleration[1] = 0;
 		path[i].acceleration[2] = 0;
 		
 		path[i].yaw = 0;
@@ -288,12 +318,7 @@ void OffboardControl::InitPath()
 			path[i].position[1] = pos[1];
 			path[i].position[2] = FLIGHT_ALTITUDE;
 			
-			path[i].velocity[0] = linvel;
-			path[i].velocity[1] = 0;
 			path[i].velocity[2] = 0;
-			
-			path[i].acceleration[0] = 0;
-			path[i].acceleration[1] = 0;
 			path[i].acceleration[2] = 0;
 			
 			path[i].yaw = 0;
@@ -350,12 +375,7 @@ void OffboardControl::InitPath()
 			path[i].position[1] = pos[1];
 			path[i].position[2] = FLIGHT_ALTITUDE;
 			
-			path[i].velocity[0] = -linvel;
-			path[i].velocity[1] = 0;
 			path[i].velocity[2] = 0;
-			
-			path[i].acceleration[0] = 0;
-			path[i].acceleration[1] = 0;
 			path[i].acceleration[2] = 0;
 			
 			path[i].yaw = PI;
@@ -411,30 +431,12 @@ void OffboardControl::InitPath()
 			path[i].position[1] = pos[1];
 			path[i].position[2] = HOVER_ALT;
 			
-			path[i].velocity[0] = 0;
-			path[i].velocity[1] = 0;
-			path[i].velocity[2] = altvel;
-			
-			path[i].acceleration[0] = 0;
-			path[i].acceleration[1] = 0;
-			path[i].acceleration[2] = 0;
-			
 			path[i].yaw = path[i-1].yaw;
 			
 			pos[0] = path[i].position[0];
 			pos[1] = path[i].position[1];
 		}
 	}
-    }
-
-    // calculate yaw_rate by dirty differentiating yaw
-    for(i=0;i<STEPS;i++){
-        double next = path[(i+1)%STEPS].yaw;
-        double curr = path[i].yaw;
-        // account for wrap around +- PI
-        if((next-curr) < -PI) next+=(2.0*PI);
-        if((next-curr) >  PI) next-=(2.0*PI);
-        path[i].yawspeed = (next-curr)/dt;
     }
 }
 
