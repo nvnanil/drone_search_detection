@@ -6,6 +6,7 @@ This is the final project for the course ENAE788M. The project focuses on state 
    
 2. *Build and source the workspace*
 ```
+cd <path_to_ros_ws>
 colcon buiild
 source install/setup.bash
 ```
