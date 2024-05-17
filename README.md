@@ -6,7 +6,7 @@ This is the final project for the course ENAE788M. The project focuses on state 
    
 2. *Build and source the workspace*
 ```
-cd <path to your ros_ws>/colcon build or colcon build --packages-select coordinate_pkg
+colcon buiild
 source install/setup.bash
 ```
 3. *To run the node to start the detection*
