@@ -1,5 +1,5 @@
 # drone_search_detection_localization
-This is the final project for the course ENAE788M. The project focuses on state estimation and YOLO detction
+This is the final project for the course ENAE788M. The project focuses on state estimation and YOLO detection
 
 ### Running the code
 1. *Clone the package to your ros workspace*
