@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import rclpy
 import numpy as np
 import math
@@ -16,12 +18,10 @@ class ImageData(Node):
             durability=QoSDurabilityPolicy.VOLATILE,
             history = QoSHistoryPolicy.KEEP_LAST,
             depth = 10,)
-        self.publisher_data = self.create_publisher(Float32MultiArray,
+        self.publisher_data = self.create_publisher(PoseStamped,
                                                '/object_center',10)
         self.camera_coordinate_data = self.create_publisher(PoseStamped,
                                                      '/object/pose_camera',10)
-        self.inertial_coordinate_data = self.create_publisher(PoseStamped,
-                                                     '/object/pose_inertial',10)
         self.local_data = self.create_subscription(VehicleLocalPosition,
                             '/fmu/out/vehicle_local_position', self.local_cb, qos_profile)
         self.subscription_data = self.create_subscription(Aidetection,
@@ -44,7 +44,7 @@ class ImageData(Node):
             msg (Aidetection): Containes frame_id and bounding box information
         """
         # self.label_boundary = msg
-        center = Float32MultiArray()
+        center = PoseStamped()
         camera_coord = PoseStamped()
         inertial_coord = PoseStamped()
         # y_center = Float32MultiArray()
@@ -52,37 +52,42 @@ class ImageData(Node):
         x_center = msg.x_min + (msg.x_max - msg.x_min)/2
         y_center = msg.y_min + (msg.y_max - msg.y_min)/2
         x_camera, y_camera = self.calculate_camera_coords(x_center, y_center)
-        x_inertial, y_inertial, z_inertial = self.calculate_inertial_coords(x_camera, y_camera, self._scaling_factor)
+        # x_inertial, y_inertial, z_inertial = self.calculate_inertial_coords(x_camera, y_camera, self._scaling_factor)
         # fc.header.stamp= self.get_clock().now().nanoseconds
         # Camera coordinates
         camera_coord.header.frame_id = msg.class_name
         camera_coord.pose.position.x = x_camera
         camera_coord.pose.position.y = y_camera
         camera_coord.pose.position.z = self._scaling_factor
-        # Inertial coordinates
-        inertial_coord.header.frame_id = msg.class_name
-        inertial_coord.pose.position.x = x_inertial
-        inertial_coord.pose.position.y = y_inertial
-        inertial_coord.pose.position.z = z_inertial
-        # Pixel coordinates
-        self.x = x_center
-        self.y = y_center
-        center.data = [x_center, y_center]
-        self.get_logger().info(f"The center point of the object is:({center.data[0]},{center.data[1]})")
-        # self.publisher_data.publish(center)
+        center.header.frame_id = msg.class_name
+        center.pose.position.x = x_center
+        center.pose.position.y = y_center
+        # self.get_logger().info(f"The center point of the object is:({center.data[0]},{center.data[1]})")
         # Publish data when the object is detected
         if msg.class_name == 'handbag' or msg.class_name == 'backpack':
             # Publish camera coordinates 
+            self.get_logger().info("Detectd handbag/backpack")
+            self.publisher_data.publish(center)
             self.camera_coordinate_data.publish(camera_coord)
             # Publish inertail coordinates
-            self.inertial_coordinate_data.publish(inertial_coord)
+            # self.inertial_coordinate_data.publish(inertial_coord)
         
     def local_cb (self, msg: VehicleLocalPosition):
+        """Callback function for /fmu/out/vehicle_local_position
+
+        Args:
+            msg (VehicleLocalPosition): Contains position and heading of the vehicle
+        """
         self._position = msg
         z_inertial = msg.z
         self._scaling_factor = z_inertial/(math.cos(45))
         
     def attitude_cb(self, msg: VehicleAttitude):
+        """Callback function for /fmu/out/vehicle_attitude
+
+        Args:
+            msg (VehicleAttitude): Contains the heading of the vehicle
+        """
         self._attitude = msg
             
     def calculate_camera_coords (self, x, y):
@@ -115,40 +120,40 @@ class ImageData(Node):
         
         return x_, y_
     
-    def calculate_inertial_coords (self, x_object, y_object, z_object):
-        xp = self._position.x
-        yp = self._position.y
-        zp = self._position.z
+    # def calculate_inertial_coords (self, x_object, y_object, z_object):
+    #     xp = self._position.x
+    #     yp = self._position.y
+    #     zp = self._position.z
         
-        # EIGEN's convention is to have the SCALAR value FIRST!!!
-        quat_lpp = np.quaternion(self._attitude.q[3], self._attitude.q[0], self._attitude.q[1], self._attitude.q[2])
-        R_lpp = np.array(quat_lpp.rotation_matrix)
+    #     # EIGEN's convention is to have the SCALAR value FIRST!!!
+    #     quat_lpp = np.quaternion(self._attitude.q[3], self._attitude.q[0], self._attitude.q[1], self._attitude.q[2])
+    #     R_lpp = np.array(quat_lpp.rotation_matrix)
 
-        # Populating a homogeneous transformation matrix with /mavros/local_position/pose data
-        # converting quaternion to rotation matrix
-        H_lpp = np.eye(4)
-        H_lpp[:3, :3] = R_lpp
-        H_lpp[:3, 3] = [xp, yp, zp]
+    #     # Populating a homogeneous transformation matrix with /mavros/local_position/pose data
+    #     # converting quaternion to rotation matrix
+    #     H_lpp = np.eye(4)
+    #     H_lpp[:3, :3] = R_lpp
+    #     H_lpp[:3, 3] = [xp, yp, zp]
         
-        H_M_B = np.array([
-            [0, -1, 0, 0],  
-            [-0.707, 0, 0.707, 0],
-            [0.707, 0, 0.707, 0],
-            [0, 0, 0, 1]
-            ])
-        object_cc = np.array([[x_object],
-                                [y_object],
-                                [z_object],
-                                [1]])
+    #     H_M_B = np.array([
+    #         [0, -1, 0, 0],  
+    #         [-0.707, 0, 0.707, 0],
+    #         [0.707, 0, 0.707, 0],
+    #         [0, 0, 0, 1]
+    #         ])
+    #     object_cc = np.array([[x_object],
+    #                             [y_object],
+    #                             [z_object],
+    #                             [1]])
 
         
-        H_M_B_inverse = np.linalg.inv(H_M_B)
-        # Camera to body
-        object_body = np.dot(H_M_B_inverse,object_cc)  
-        # Body to inertial frame
-        object_inertial = np.dot(H_lpp,object_body)     
+    #     H_M_B_inverse = np.linalg.inv(H_M_B)
+    #     # Camera to body
+    #     object_body = np.dot(H_M_B_inverse,object_cc)  
+    #     # Body to inertial frame
+    #     object_inertial = np.dot(H_lpp,object_body)     
         
-        return object_inertial[0][0], object_inertial[1][0], object_inertial[2][0] 
+    #     return object_inertial[0][0], object_inertial[1][0], object_inertial[2][0] 
         
 def main(args = None):
     rclpy.init(args=args)
@@ -160,6 +165,6 @@ def main(args = None):
     finally:
         object.destroy_node()
         rclpy.shutdown()
-    
-    # if __name__ == '__main__':
-    #     main()
+
+if __name__ == '__main__':
+    main()

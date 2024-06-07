@@ -1,0 +1,4 @@
+[submodule "ros_ws/src/px4_msgs"]
+	path = ros_ws/src/px4_msgs
+	url = git@github.com:PX4/px4_msgs.git
+	branch = release/1.14
